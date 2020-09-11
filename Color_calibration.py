@@ -4,8 +4,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib import pyplot as plt
 from scipy import linalg as la
-from scipy.special import erf
-import pickle
+from skimage.feature import greycomatrix, greycoprops
 
 # Open an image
 def open_image(path):
@@ -60,46 +59,6 @@ def convert_grayscale(image):
             gray_int = int(round(gray))
             pixels[i, j] = (gray_int, gray_int, gray_int)
             pixel_list.append(gray_int)
-
-    dict = {}
-    for key in pixel_list:
-        dict[key] = dict.get(key, 0) + 1
-
-    return new, dict
-
-# Create a calibrated grayscale version of the image
-def convert_grayscale_calib(image, sol):
-    # Get size
-    width, height = image.size
-
-    # Create new image and a pixel map
-    new = create_image(width, height)
-    pixels = new.load()
-    pixel_list = []
-
-    # Transform to grayscale
-    for i in range(width):
-        for j in range(height):
-            # Get Pixel
-            pixel = get_pixel(image, i, j)
-
-            # Get the calibrated RGB tristimulus values (int from 0 to 255)
-            # Linear calibration
-            red, green, blue = np.dot(np.array([1, pixel[0], pixel[1], pixel[2]]), sol)
-
-            # Transform to grayscale
-            gray = (red * 0.299) + (green * 0.587) + (blue * 0.114)
-
-            # Set Pixel in new image
-            gray_int = int(round(gray))
-            pixels[i, j] = (gray_int, gray_int, gray_int)
-            pixel_list.append(gray_int)
-
-    # Get the mean and standard values of gray level histograms
-    mean_pixels = np.mean(pixel_list)
-    std_pixels = np.std(pixel_list)
-    print('The mean of the histogram is %f' % mean_pixels)
-    # print('The standard deviation of the histogram is %f' % std_pixels)
 
     dict = {}
     for key in pixel_list:
@@ -196,6 +155,75 @@ def calibration_color_check(image, weight):
 
     return sol
 
+def RGB_to_HSI(red, green, blue):
+  smooth = 1e-10
+  intensity = (red + green + blue) / 3.0
+
+  minimum = np.minimum(np.minimum(red, green), blue)
+  saturation = 1 - minimum / intensity
+
+  sqrt_calc = np.sqrt((red - green) ** 2 + (red - blue) * (green - blue)) + smooth
+  hue = np.arccos(((0.5 * ((red - green) + (red - blue)) + smooth) / sqrt_calc))
+  if (green < blue):
+      hue = 2 * np.pi - hue
+  hue = hue * 180 / np.pi
+  return hue, saturation, intensity
+
+# Create a calibrated grayscale version of the image
+def convert_grayscale_calib(image, sol):
+    # Get size
+    width, height = image.size
+
+    # Create new image and a pixel map
+    new = create_image(width, height)
+    pixels = new.load()
+    pixel_list, pixel_matrix = [], [[0]*width for _ in range(height)]
+    hue_list, saturation_list, intensity_list = [], [], []
+
+    # Transform to grayscale
+    for i in range(width):
+        for j in range(height):
+            # Get Pixel
+            pixel = get_pixel(image, i, j)
+
+            # Get the calibrated RGB tristimulus values (int from 0 to 255)
+            # Linear calibration
+            red, green, blue = np.dot(np.array([1, pixel[0], pixel[1], pixel[2]]), sol)
+            gray = (red * 0.299) + (green * 0.587) + (blue * 0.114)
+
+            # Set Pixel in new image
+            gray_int = int(round(gray))
+            pixels[i, j] = (gray_int, gray_int, gray_int)
+            pixel_list.append(gray_int)
+            pixel_matrix[j][i] = gray_int
+
+            # Get the HSI components
+            hue, saturation, intensity = RGB_to_HSI(red/255.0, green/255.0, blue/255.0)
+            hue_list.append(hue)
+            saturation_list.append(saturation)
+            intensity_list.append(intensity)
+
+    # Get the mean and standard values of gray level histograms
+    mean_pixels = np.mean(pixel_list)
+    std_pixels = np.std(pixel_list)
+
+    print('The mean of gray level is %f' % mean_pixels)
+    print('The standard deviation of gray level is %f' % std_pixels)
+
+    # Print HSI components
+    print('The mean of hue is %f' % np.mean(hue_list))
+    print('The standard deviation of hue is %f' % np.std(hue_list))
+    print('The mean of saturation is %f' % np.mean(saturation_list))
+    print('The standard deviation of saturation is %f' % np.std(saturation_list))
+    print('The mean of intensity is %f' % np.mean(intensity_list))
+    print('The standard deviation of intensity is %f' % np.std(intensity_list))
+
+    dict = {}
+    for key in pixel_list:
+        dict[key] = dict.get(key, 0) + 1
+    # save_image(new, '/path/new.tiff')
+    return pixel_matrix, dict
+
 # Ostu threshold algorithm for image binarization
 # Get the proportion of dark pixels
 def Ostu_threshold(gray_pdf):
@@ -227,14 +255,15 @@ def Ostu_threshold(gray_pdf):
 # Main
 def main():
     # Load image. Type in the image number
-    pic_num = np.array([1, 10])
+    pic_num = np.array([32])
+    # pic_num = np.array(range(1,60))
 
     nums = len(pic_num) # number of images
     gray_pdfs = [] # create a list for the uncalibrated gray level intensity histograms of images
     calib_pdfs = [] # create a list for the calibrated gray level intensity histograms of images
 
     for num in range(nums):
-        path = '/Users/%d.tiff' % pic_num[num] # the path of the rock image
+        path = '/Users/path/%d.tiff' % pic_num[num]  # the path of the rock image
         original = open_image(path)
 
         # Convert to gray level and save
@@ -246,16 +275,26 @@ def main():
         gray_pdfs.append(gray_pdf)
 
         # Load the color checker image
-        path_bar = '/Users/bar_%d.tiff' % pic_num[num] # the path of the color checker image
+        path_bar = '/Users/path/bar_%d.tiff' % pic_num[num]  # the path of the image of the color checker
         image = open_image(path_bar)
 
         # Get the parameters of the calibration function
         sol = calibration_color_check(image, weight=20)
 
         # Get the calibrated gray level intensity histograms of the image
-        new2, dict2 = convert_grayscale_calib(original, sol)
+        pixel_matrix, dict2 = convert_grayscale_calib(original, sol)
+        # save_image(new2, 'Chem/27_new2.tiff')
+
         calib_pdf = pdf(dict2)
         calib_pdfs.append(calib_pdf)
+        props = ['contrast', 'homogeneity', 'energy', 'correlation']
+        glcm = greycomatrix(pixel_matrix, [1], [0, np.pi/4, np.pi/2, np.pi/4*3, np.pi, np.pi/4*5, np.pi/4*6, np.pi/4*7], 256, symmetric=True, normed=True)
+
+        # Get the haralick features from gray-level co-occurrence matrix
+        for prop in props:
+            res = np.mean(greycoprops(glcm, prop))
+            print('The %s is %f' % (prop, res))
+
 
     # Plot the uncalibrated gray level intensity histograms
     for i in range(nums):
